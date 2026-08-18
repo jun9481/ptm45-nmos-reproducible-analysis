@@ -1,0 +1,38 @@
+{
+  "project": {
+    "technology_nm": 45,
+    "device_type": "NMOS",
+    "width_um": 1.0,
+    "length_um": 0.045,
+    "temperature_c": 25.0,
+    "vgs_start_v": -0.2,
+    "vgs_step_v": 0.005,
+    "low_vds_v": 0.05,
+    "include_common_vdd_curve": true,
+    "common_vdd_v": 1.0
+  },
+  "models": {
+    "HP": {
+      "path": "models/45nm_HP.pm",
+      "expected_model_name": "nmos",
+      "expected_nominal_vdd_v": 1.0,
+      "expected_sha256": "c9ed2e513523c57a76912a35b2860cb85e4aaa3402b69757d84efa9cc2fb8410",
+      "official_download_url": "https://drive.google.com/file/d/1H5eUrlxDpi2Sdmf5W9rCsjBRjttYPFZs/view?usp=drive_link"
+    },
+    "LP": {
+      "path": "models/45nm_LP.pm",
+      "expected_model_name": "nmos",
+      "expected_nominal_vdd_v": 1.1,
+      "expected_sha256": "397141eb8a813045075ac2be3098d3b136ebaf4d597c08fca627922a75e443b7",
+      "official_download_url": "https://drive.google.com/file/d/1l_4DKHzqwFFLugqTWzVWdWruB7eJL4mK/view?usp=drive_link"
+    }
+  },
+  "ss_extraction": {
+    "mode": "auto_minimum",
+    "window_points": 21,
+    "min_current_span_decades": 0.75,
+    "min_r_squared": 0.995,
+    "max_ion_fraction": 0.01,
+    "manual_vgs_ranges_v": {}
+  }
+}

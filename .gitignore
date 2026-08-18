@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+~$*.xlsx
+
+# PTM model cards are downloaded from the official host by each user.
+models/*.pm
+
+# Generated simulator artifacts are reproducible and may be noisy.
+netlists/generated/
+data/raw/*.txt
+!data/raw/README.md
+results/logs/*
+!results/logs/README.md
+results/.matplotlib-cache/

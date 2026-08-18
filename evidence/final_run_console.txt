@@ -1,0 +1,13 @@
+Source: successful Windows PowerShell run observed on 2026-08-15
+
+Command:
+py ptm_pipeline.py all --ngspice "C:\Spice64\bin\ngspice_con.exe"
+
+Recorded completion output:
+ngspice: ******
+HP: model=nmos, nominal VDD=1 V, SHA-256=c9ed2e513523...
+LP: model=nmos, nominal VDD=1.1 V, SHA-256=397141eb8a81...
+Completed: 5 curves, 1245 data rows, 4 metric rows.
+
+This is a transcription of the supplied console evidence, not a newly executed
+ngspice run inside the release-assembly environment.
