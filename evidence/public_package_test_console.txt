@@ -1,4 +1,4 @@
-Public v1.1 pre-release verification record
+Public v1.1 release verification record
 Verification date: 2026-08-22
 Environment: Python 3.12.13; dependencies pinned in requirements-lock.txt
 

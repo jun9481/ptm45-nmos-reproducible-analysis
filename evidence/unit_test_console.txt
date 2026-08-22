@@ -1,4 +1,4 @@
-Public v1.1 pre-release regression record
+Public v1.1 release regression record
 Verification date: 2026-08-22
 
 Command:
