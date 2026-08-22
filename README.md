@@ -124,13 +124,16 @@ HP의 명목 VDD와 공통 비교 VDD는 모두 1.0 V이므로 동일한 비교�
 덮어쓰기 전에 수행합니다.
 
 ```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
+py -3.12 -m venv ..\ptm45-v11-venv
+..\ptm45-v11-venv\Scripts\Activate.ps1
 py -m pip install --requirement requirements-lock.txt
 py -B -m unittest discover -s tests -v
 py -B ss_sensitivity.py
 py -B verify_release.py
 ```
+
+가상환경은 공개 번들 무결성 검사 대상에 포함되지 않도록 저장소 바깥에
+생성합니다.
 
 기대 결과는 모든 테스트의 `OK`, SS 민감도 표의 정상 재생성, 매니페스트·
 공개 번들·수치 검증의 `PASS`입니다. `-B`는 검증 중 `__pycache__`와 `.pyc`
