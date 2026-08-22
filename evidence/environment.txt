@@ -1,4 +1,4 @@
-PTM45 MOSFET v1.1 pre-release environment record
+PTM45 MOSFET v1.1 release environment record
 Latest validation date: 2026-08-22
 
 Observed successful source run:
