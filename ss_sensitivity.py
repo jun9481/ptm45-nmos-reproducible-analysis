@@ -392,7 +392,9 @@ def write_tables(
     output_dir: Path,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    options = {"index": False, "float_format": "%.15g", "lineterminator": "\n"}
+    # Twelve significant digits preserve the published analysis precision while
+    # avoiding platform-specific last-bit differences from NumPy/BLAS builds.
+    options = {"index": False, "float_format": "%.12g", "lineterminator": "\n"}
     all_windows.to_csv(output_dir / "all_window_statistics.csv", **options)
     sensitivity.to_csv(output_dir / "sensitivity_results.csv", **options)
     cutoff.to_csv(output_dir / "cutoff_sensitivity.csv", **options)
