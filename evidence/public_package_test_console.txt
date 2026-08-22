@@ -1,23 +1,39 @@
-Public v1.0-public verification record
-Verification date: 2026-08-19
+Public v1.1 pre-release verification record
+Verification date: 2026-08-22
 Environment: Python 3.12.13; dependencies pinned in requirements-lock.txt
 
-Command:
-PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/ptm45-mpl-final \
-  python -m unittest discover -s tests -v
+Unit-test command:
+PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/ptm45-v11-mpl \
+  python -B -m unittest discover -s tests -v
 
 Coverage:
 - model metadata and enforced SHA-256
 - repository-relative netlist paths and current-sign convention
 - VGS sweep geometry and wrdata parsing
 - minimum-local-SS extraction fixture
-- bundled 5-curve / 1,245-row data and four metrics
-- 728-window / 72-grid / 10-cutoff sensitivity reconstruction
-- forbidden public artifacts, semantic metric recalculation and manifest logic
+- constant-current Vth extraction with log10(ID)-VGS interpolation
+- positive DIBL calculation in mV/V
+- invalid, missing, downward and multiple-crossing rejection
+- processed-data W/L/temperature consistency checks
+- bundled 5-curve / 1,245-row data and four Ion/Ioff/SS metrics
+- three base Vth/DIBL rows and fifteen current-sensitivity rows
+- 728-window / 72-grid / 10-cutoff SS sensitivity reconstruction
+- forbidden public artifacts, strict CSV schemas, semantic recalculation and manifest logic
 
-Result:
-Ran 20 tests
+Unit-test result:
+Ran 36 tests
 OK
 
-The release-level `python verify_release.py` command separately verifies the
-final file manifest, public-bundle exclusions and four recalculated metric rows.
+Release-verifier command:
+PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/ptm45-v11-mpl \
+  python -B verify_release.py
+
+Release-verifier coverage:
+- complete SHA-256 manifest for 54 public files
+- no private model cards, caches, virtual environments or generated raw/log artifacts
+- four Ion/Ioff/SS metric rows recalculated from bundled processed data
+- three base Vth/DIBL rows recalculated from bundled processed data
+- fifteen Vth/DIBL sensitivity rows recalculated for five current multipliers
+
+Release-verifier result:
+PASS

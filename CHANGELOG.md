@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.1 — Unreleased
+
+- `ID,target = 10⁻⁷ × (W/L) A` constant-current 기준과 `log10(ID)`–`VGS`
+  선형 보간을 사용하는 Vth 추출을 추가했습니다.
+- 낮은 VDS와 높은 VDS의 Vth로
+  `1000 × (Vth,low − Vth,high) / (VDS,high − VDS,low)`를 계산해 DIBL을
+  `mV/V` 단위로 기록하도록 했습니다.
+- 공통 1.0 V 비교와 모델 명목 VDD 비교를 구분했습니다. HP는 명목 VDD가
+  공통 VDD와 같아 중복 행을 제거하고, LP는 공통 1.0 V와 명목 1.1 V를 모두
+  남겨 `results/vth_dibl_metrics.csv`에 총 3행을 기록합니다.
+- Vth 기준전류에 `[0.1, 0.3, 1.0, 3.0, 10.0]` 배수를 적용하는 민감도 분석과
+  15행 `results/vth_dibl_sensitivity.csv`를 추가했습니다.
+- `vth_comparison.png`, `dibl_comparison.png`,
+  `vth_dibl_sensitivity.png`을 추가해 기준 조건과 민감도 결과를
+  시각화했습니다.
+- Vth 교차점, DIBL 부호·단위, 비교 행 구성과 기준 수치를 확인하는 단위·
+  통합·회귀 테스트를 보강했습니다.
+- Vth 입력의 NaN/Inf, 비양수 ID, 중복·비증가 VGS와 무교차·복수교차를
+  명시적 오류로 처리하도록 입력 검증을 강화했습니다.
+- 설정의 W/L·온도와 처리 CSV 메타데이터가 다르면 재처리를 요구하도록 해
+  오래된 데이터에 새 설정을 잘못 적용하는 경우를 차단했습니다.
+- 릴리스 검증기가 기존 Ion/Ioff/SS뿐 아니라 3행 Vth/DIBL과 15행 민감도
+  CSV도 원본 처리 데이터에서 다시 계산해 비교하도록 확장했습니다.
+- README에 Vth/DIBL 공식, 기준전류 민감도, 재현 명령, 출력 파일과 해석
+  한계를 문서화했습니다.
+- 이 항목은 아직 태그·릴리스되지 않은 v1.1 작업 내역입니다.
+
 ## v1.0-public — 2026-08-19
 
 - GitHub 첫 화면에서 핵심 결과·문제 해결·검증 범위를 빠르게 확인하도록

@@ -18,6 +18,12 @@ class BundledResultRegressionTests(unittest.TestCase):
             PROJECT_ROOT / "data" / "processed" / "ptm45_combined.csv"
         )
         cls.metrics = pd.read_csv(PROJECT_ROOT / "results" / "metrics.csv")
+        cls.vth_dibl = pd.read_csv(
+            PROJECT_ROOT / "results" / "vth_dibl_metrics.csv"
+        )
+        cls.vth_dibl_sensitivity = pd.read_csv(
+            PROJECT_ROOT / "results" / "vth_dibl_sensitivity.csv"
+        )
         cls.manifest = pd.read_csv(
             PROJECT_ROOT / "data" / "metadata" / "data_manifest.csv"
         )
@@ -57,12 +63,56 @@ class BundledResultRegressionTests(unittest.TestCase):
         self.assertTrue(np.isclose(lp["SS_mV_dec"], 86.64802452741170, rtol=1e-12))
         self.assertTrue((common["SS_fit_VGS_min_V"] > -0.2).all())
 
+    def test_vth_dibl_schema_baselines_and_sensitivity_inventory(self) -> None:
+        self.assertEqual(len(self.vth_dibl), 3)
+        keys = list(
+            zip(
+                self.vth_dibl["application_type"],
+                self.vth_dibl["comparison_basis"],
+            )
+        )
+        self.assertEqual(
+            keys,
+            [
+                ("HP", "common_vdd"),
+                ("LP", "common_vdd"),
+                ("LP", "model_nominal_vdd"),
+            ],
+        )
+        self.assertTrue(
+            np.allclose(
+                self.vth_dibl["DIBL_mV_per_V"],
+                [146.158470072, 76.662051644, 75.953722458],
+                rtol=1e-11,
+                atol=1e-10,
+            )
+        )
+
+        self.assertEqual(len(self.vth_dibl_sensitivity), 15)
+        self.assertEqual(
+            sorted(
+                self.vth_dibl_sensitivity[
+                    "Vth_current_multiplier"
+                ].unique()
+            ),
+            [0.1, 0.3, 1.0, 3.0, 10.0],
+        )
+        counts = self.vth_dibl_sensitivity.groupby(
+            ["application_type", "comparison_basis"]
+        ).size()
+        self.assertTrue((counts == 5).all())
+
     def test_release_artifacts_are_present(self) -> None:
         required = [
             PROJECT_ROOT / "results" / "comparison_summary.md",
+            PROJECT_ROOT / "results" / "vth_dibl_metrics.csv",
+            PROJECT_ROOT / "results" / "vth_dibl_sensitivity.csv",
             PROJECT_ROOT / "results" / "figures" / "id_vg_linear.png",
             PROJECT_ROOT / "results" / "figures" / "id_vg_semilog.png",
             PROJECT_ROOT / "results" / "figures" / "hp_lp_common_vdd_metrics.png",
+            PROJECT_ROOT / "results" / "figures" / "vth_comparison.png",
+            PROJECT_ROOT / "results" / "figures" / "dibl_comparison.png",
+            PROJECT_ROOT / "results" / "figures" / "vth_dibl_sensitivity.png",
             PROJECT_ROOT
             / "results"
             / "validation"

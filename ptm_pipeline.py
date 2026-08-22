@@ -66,6 +66,46 @@ METRICS_COLUMNS = [
     "Ion_A_per_um",
     "Ioff_A_per_um",
 ]
+
+VTH_DIBL_COLUMNS = [
+    "application_type",
+    "comparison_basis",
+    "low_bias_label",
+    "high_bias_label",
+    "VDS_low_V",
+    "VDS_high_V",
+    "nominal_VDD_V",
+    "Vth_normalized_current_A",
+    "Vth_target_ID_A",
+    "Vth_low_V",
+    "Vth_high_V",
+    "DIBL_mV_per_V",
+    "Vth_method",
+    "Vth_interpolation",
+]
+
+VTH_DIBL_SENSITIVITY_COLUMNS = [
+    "application_type",
+    "comparison_basis",
+    "low_bias_label",
+    "high_bias_label",
+    "VDS_low_V",
+    "VDS_high_V",
+    "nominal_VDD_V",
+    "Vth_current_multiplier",
+    "Vth_base_normalized_current_A",
+    "Vth_normalized_current_A",
+    "Vth_target_ID_A",
+    "Vth_low_V",
+    "Vth_high_V",
+    "DIBL_mV_per_V",
+    "Vth_low_shift_mV",
+    "Vth_high_shift_mV",
+    "DIBL_change_mV_per_V",
+    "Vth_method",
+    "Vth_interpolation",
+]
+
 METRICS_FLOAT_FORMAT = "%.12g"
 
 
@@ -539,14 +579,23 @@ def process_raw_data(
     ]
     combined = combined[ordered]
 
-    combined.to_csv(processed_dir / "ptm45_combined.csv", index=False)
+    combined.to_csv(
+        processed_dir / "ptm45_combined.csv",
+        index=False,
+        lineterminator="\n",
+    )
     for application_type in ("HP", "LP"):
         subset = combined[combined["application_type"] == application_type]
         subset.to_csv(
             processed_dir / f"ptm45_{application_type.lower()}_nmos_transfer.csv",
             index=False,
+            lineterminator="\n",
         )
-    pd.DataFrame(manifest_rows).to_csv(metadata_dir / "data_manifest.csv", index=False)
+    pd.DataFrame(manifest_rows).to_csv(
+        metadata_dir / "data_manifest.csv",
+        index=False,
+        lineterminator="\n",
+    )
     write_simulation_conditions(config, specs)
     return combined
 
@@ -620,6 +669,128 @@ def interpolate_at(frame: pd.DataFrame, vgs_v: float) -> float:
     if math.isclose(float(x[nearest]), vgs_v, rel_tol=0.0, abs_tol=1e-9):
         return float(y[nearest])
     return float(np.interp(vgs_v, x, y))
+
+
+def extract_vth_constant_current(
+    frame: pd.DataFrame,
+    normalized_current_a: float,
+    width_um: float,
+    length_um: float,
+    interpolation: str,
+) -> tuple[float, float]:
+    if interpolation != "log10_id_linear":
+        raise PipelineError(
+            f"Unsupported Vth interpolation method: {interpolation}"
+        )
+
+    for name, value in (
+        ("normalized_current_a", normalized_current_a),
+        ("width_um", width_um),
+        ("length_um", length_um),
+    ):
+        if not math.isfinite(value) or value <= 0:
+            raise PipelineError(f"{name} must be a positive finite value.")
+
+    required = {"VGS_V", "ID_A"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise PipelineError(
+            f"Vth extraction is missing columns: {', '.join(sorted(missing))}."
+        )
+
+    target_current_a = normalized_current_a * width_um / length_um
+    samples = frame[["VGS_V", "ID_A"]].copy()
+    samples["VGS_V"] = pd.to_numeric(samples["VGS_V"], errors="coerce")
+    samples["ID_A"] = pd.to_numeric(samples["ID_A"], errors="coerce")
+    vgs = samples["VGS_V"].to_numpy(dtype=float)
+    current = samples["ID_A"].to_numpy(dtype=float)
+
+    if len(samples) < 2:
+        raise PipelineError(
+            "Vth extraction needs at least two positive-current points."
+        )
+    if not np.isfinite(vgs).all() or not np.isfinite(current).all():
+        raise PipelineError(
+            "Vth extraction data contains non-finite or non-numeric VGS/ID values."
+        )
+    if (current <= 0).any():
+        raise PipelineError(
+            "Vth extraction requires strictly positive ID values at every sample."
+        )
+    if (np.diff(vgs) <= 0).any():
+        raise PipelineError(
+            "Vth extraction requires strictly increasing, non-duplicate VGS values."
+        )
+
+    exact_mask = np.isclose(
+        current, target_current_a, rtol=1e-12, atol=0.0
+    )
+    exact = np.flatnonzero(exact_mask)
+    delta = current - target_current_a
+    sign_crossings = np.flatnonzero(
+        (~exact_mask[:-1])
+        & (~exact_mask[1:])
+        & (delta[:-1] * delta[1:] < 0)
+    )
+    crossing_count = int(exact.size + sign_crossings.size)
+    if crossing_count != 1:
+        raise PipelineError(
+            f"Expected one Vth crossing at {target_current_a:.6g} A, "
+            f"but found {crossing_count}."
+        )
+
+    if exact.size == 1:
+        index = int(exact[0])
+        if not (
+            np.all(current[:index] < target_current_a)
+            and np.all(current[index + 1 :] > target_current_a)
+        ):
+            raise PipelineError(
+                "The unique Vth crossing must follow increasing ID with VGS."
+            )
+        return float(vgs[index]), float(target_current_a)
+
+    lower = int(sign_crossings[0])
+    if not (
+        current[lower] < target_current_a < current[lower + 1]
+        and np.all(current[: lower + 1] < target_current_a)
+        and np.all(current[lower + 1 :] > target_current_a)
+    ):
+        raise PipelineError(
+            "The unique Vth crossing must follow increasing ID with VGS."
+        )
+
+    log_current = np.log10(current[lower : lower + 2])
+    vth_v = np.interp(
+        np.log10(target_current_a),
+        log_current,
+        vgs[lower : lower + 2],
+    )
+    return float(vth_v), float(target_current_a)
+
+
+def calculate_dibl_mv_per_v(
+    vth_low_v: float,
+    vth_high_v: float,
+    low_vds_v: float,
+    high_vds_v: float,
+) -> float:
+    for name, value in (
+        ("vth_low_v", vth_low_v),
+        ("vth_high_v", vth_high_v),
+        ("low_vds_v", low_vds_v),
+        ("high_vds_v", high_vds_v),
+    ):
+        if not math.isfinite(value):
+            raise PipelineError(f"{name} must be finite.")
+
+    delta_vds_v = high_vds_v - low_vds_v
+    if delta_vds_v <= 0:
+        raise PipelineError(
+            "high_vds_v must be greater than low_vds_v for DIBL calculation."
+        )
+
+    return 1000.0 * (vth_low_v - vth_high_v) / delta_vds_v
 
 
 def linear_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
@@ -751,6 +922,376 @@ def select_curve(
     return frame.sort_values("VGS_V")
 
 
+def validate_processed_conditions(
+    config: dict[str, Any], combined: pd.DataFrame
+) -> None:
+    """Ensure the processed data matches the configured device geometry."""
+    metadata = (
+        ("W_um", "width_um", "um", True),
+        ("L_um", "length_um", "um", True),
+        ("temperature_C", "temperature_c", "deg C", False),
+    )
+    missing = [column for column, _, _, _ in metadata if column not in combined]
+    if missing:
+        raise PipelineError(
+            "Vth/DIBL analysis is missing processed-data metadata columns: "
+            f"{', '.join(missing)}. Run 'process' again."
+        )
+
+    project = config.get("project")
+    if not isinstance(project, dict):
+        raise PipelineError("project_config.json is missing the 'project' object.")
+
+    for column, config_key, unit, must_be_positive in metadata:
+        if config_key not in project:
+            raise PipelineError(
+                f"project_config.json is missing project.{config_key}."
+            )
+        try:
+            expected = float(project[config_key])
+        except (TypeError, ValueError) as exc:
+            raise PipelineError(
+                f"project.{config_key} must be a finite numeric value."
+            ) from exc
+        if not math.isfinite(expected) or (must_be_positive and expected <= 0):
+            requirement = "a positive finite" if must_be_positive else "a finite"
+            raise PipelineError(
+                f"project.{config_key} must be {requirement} numeric value."
+            )
+
+        numeric = pd.to_numeric(combined[column], errors="coerce").to_numpy(
+            dtype=float
+        )
+        nonfinite = ~np.isfinite(numeric)
+        if nonfinite.any():
+            raise PipelineError(
+                f"Processed metadata column {column} contains "
+                f"{int(nonfinite.sum())} non-finite or non-numeric value(s)."
+            )
+
+        mismatch = ~np.isclose(numeric, expected, rtol=0.0, atol=1e-12)
+        if mismatch.any():
+            found = ", ".join(
+                f"{value:g}" for value in np.unique(numeric[mismatch])[:5]
+            )
+            suffix = "" if np.unique(numeric[mismatch]).size <= 5 else ", ..."
+            raise PipelineError(
+                f"Processed metadata {column} does not match "
+                f"project.{config_key}={expected:g} {unit}: found "
+                f"{found}{suffix} in {int(mismatch.sum())} row(s). "
+                "Run 'process' again with the current configuration."
+            )
+
+
+def analyze_vth_dibl(
+    config: dict[str, Any],
+    combined: pd.DataFrame,
+) -> pd.DataFrame:
+    validate_processed_conditions(config, combined)
+    project = config["project"]
+    settings = config["vth_extraction"]
+
+    method = str(settings["method"])
+    if method != "constant_current":
+        raise PipelineError(
+            f"Unsupported Vth extraction method: {method}"
+        )
+
+    normalized_current_a = float(settings["normalized_current_a"])
+    interpolation = str(settings["interpolation"])
+    width_um = float(project["width_um"])
+    length_um = float(project["length_um"])
+    configured_low_vds_v = float(project["low_vds_v"])
+    include_common = bool(
+        project.get("include_common_vdd_curve", False)
+    )
+    common_vdd_v = (
+        float(project["common_vdd_v"])
+        if include_common
+        else math.nan
+    )
+
+    rows: list[dict[str, Any]] = []
+
+    for application_type in ("HP", "LP"):
+        nominal_vdd_v = float(
+            config["models"][application_type][
+                "expected_nominal_vdd_v"
+            ]
+        )
+
+        low_bias_label = "low_vds"
+        low_frame = select_curve(
+            combined,
+            application_type,
+            low_bias_label,
+        )
+        low_vds_values = low_frame["VDS_V"].dropna().unique()
+        if len(low_vds_values) != 1:
+            raise PipelineError(
+                f"Expected one VDS value for "
+                f"{application_type}.{low_bias_label}."
+            )
+
+        actual_low_vds_v = float(low_vds_values[0])
+        if not math.isclose(
+            actual_low_vds_v,
+            configured_low_vds_v,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise PipelineError(
+                f"Unexpected low VDS for {application_type}: "
+                f"{actual_low_vds_v:g} V."
+            )
+
+        vth_low_v, target_current_a = (
+            extract_vth_constant_current(
+                frame=low_frame,
+                normalized_current_a=normalized_current_a,
+                width_um=width_um,
+                length_um=length_um,
+                interpolation=interpolation,
+            )
+        )
+
+        comparisons: list[tuple[str, str, float]] = []
+
+        if include_common:
+            common_matches_nominal = math.isclose(
+                common_vdd_v,
+                nominal_vdd_v,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+            common_bias_label = (
+                "nominal_vdd"
+                if common_matches_nominal
+                else (
+                    "common_"
+                    f"{format_voltage_for_name(common_vdd_v)}"
+                )
+            )
+            comparisons.append(
+                (
+                    "common_vdd",
+                    common_bias_label,
+                    common_vdd_v,
+                )
+            )
+
+        if (
+            not include_common
+            or not math.isclose(
+                nominal_vdd_v,
+                common_vdd_v,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            comparisons.append(
+                (
+                    "model_nominal_vdd",
+                    "nominal_vdd",
+                    nominal_vdd_v,
+                )
+            )
+
+        for (
+            comparison_basis,
+            high_bias_label,
+            expected_high_vds_v,
+        ) in comparisons:
+            high_frame = select_curve(
+                combined,
+                application_type,
+                high_bias_label,
+            )
+            high_vds_values = (
+                high_frame["VDS_V"].dropna().unique()
+            )
+            if len(high_vds_values) != 1:
+                raise PipelineError(
+                    f"Expected one VDS value for "
+                    f"{application_type}.{high_bias_label}."
+                )
+
+            actual_high_vds_v = float(high_vds_values[0])
+            if not math.isclose(
+                actual_high_vds_v,
+                expected_high_vds_v,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                raise PipelineError(
+                    f"Unexpected high VDS for "
+                    f"{application_type}.{high_bias_label}: "
+                    f"{actual_high_vds_v:g} V."
+                )
+
+            vth_high_v, high_target_current_a = (
+                extract_vth_constant_current(
+                    frame=high_frame,
+                    normalized_current_a=normalized_current_a,
+                    width_um=width_um,
+                    length_um=length_um,
+                    interpolation=interpolation,
+                )
+            )
+
+            if not math.isclose(
+                target_current_a,
+                high_target_current_a,
+                rel_tol=1e-12,
+                abs_tol=0.0,
+            ):
+                raise PipelineError(
+                    "Low- and high-VDS Vth extractions used "
+                    "different target currents."
+                )
+
+            rows.append(
+                {
+                    "application_type": application_type,
+                    "comparison_basis": comparison_basis,
+                    "low_bias_label": low_bias_label,
+                    "high_bias_label": high_bias_label,
+                    "VDS_low_V": actual_low_vds_v,
+                    "VDS_high_V": actual_high_vds_v,
+                    "nominal_VDD_V": nominal_vdd_v,
+                    "Vth_normalized_current_A": (
+                        normalized_current_a
+                    ),
+                    "Vth_target_ID_A": target_current_a,
+                    "Vth_low_V": vth_low_v,
+                    "Vth_high_V": vth_high_v,
+                    "DIBL_mV_per_V": calculate_dibl_mv_per_v(
+                        vth_low_v=vth_low_v,
+                        vth_high_v=vth_high_v,
+                        low_vds_v=actual_low_vds_v,
+                        high_vds_v=actual_high_vds_v,
+                    ),
+                    "Vth_method": method,
+                    "Vth_interpolation": interpolation,
+                }
+            )
+
+    return pd.DataFrame(rows, columns=VTH_DIBL_COLUMNS)
+
+
+def analyze_vth_dibl_sensitivity(
+    config: dict[str, Any], combined: pd.DataFrame
+) -> pd.DataFrame:
+    """Recalculate every Vth/DIBL comparison across configured currents."""
+    settings = config.get("vth_extraction")
+    if not isinstance(settings, dict):
+        raise PipelineError(
+            "project_config.json is missing the 'vth_extraction' object."
+        )
+    raw_multipliers = settings.get("sensitivity_multipliers")
+    if not isinstance(raw_multipliers, (list, tuple)) or not raw_multipliers:
+        raise PipelineError(
+            "vth_extraction.sensitivity_multipliers must be a non-empty list."
+        )
+
+    multipliers: list[float] = []
+    multiplier_error = (
+        "Every Vth sensitivity multiplier must be a positive finite number."
+    )
+    for raw_value in raw_multipliers:
+        if isinstance(raw_value, bool):
+            raise PipelineError(multiplier_error)
+        try:
+            multiplier = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError(multiplier_error) from exc
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise PipelineError(multiplier_error)
+        if multiplier in multipliers:
+            raise PipelineError(
+                "Vth sensitivity multipliers must not contain duplicates."
+            )
+        multipliers.append(multiplier)
+
+    try:
+        base_normalized_current_a = float(settings["normalized_current_a"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PipelineError(
+            "vth_extraction.normalized_current_a must be a positive finite number."
+        ) from exc
+    if (
+        not math.isfinite(base_normalized_current_a)
+        or base_normalized_current_a <= 0
+    ):
+        raise PipelineError(
+            "vth_extraction.normalized_current_a must be a positive finite number."
+        )
+
+    def row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(row["application_type"]),
+            str(row["comparison_basis"]),
+            str(row["low_bias_label"]),
+            str(row["high_bias_label"]),
+        )
+
+    base_metrics = analyze_vth_dibl(config, combined)
+    base_rows = base_metrics.to_dict(orient="records")
+    base_by_key = {row_key(row): row for row in base_rows}
+
+    recalculated: list[tuple[float, dict[tuple[str, str, str, str], dict[str, Any]]]] = []
+    for multiplier in multipliers:
+        sensitivity_config = dict(config)
+        sensitivity_settings = dict(settings)
+        sensitivity_settings["normalized_current_a"] = (
+            base_normalized_current_a * multiplier
+        )
+        sensitivity_config["vth_extraction"] = sensitivity_settings
+        sensitivity_metrics = analyze_vth_dibl(sensitivity_config, combined)
+        sensitivity_rows = sensitivity_metrics.to_dict(orient="records")
+        recalculated.append(
+            (
+                multiplier,
+                {row_key(row): row for row in sensitivity_rows},
+            )
+        )
+
+    rows: list[dict[str, Any]] = []
+    for base_row in base_rows:
+        key = row_key(base_row)
+        for multiplier, sensitivity_by_key in recalculated:
+            if key not in sensitivity_by_key:
+                raise PipelineError(
+                    "Vth sensitivity analysis produced inconsistent comparison rows."
+                )
+            current_row = sensitivity_by_key[key]
+            rows.append(
+                {
+                    **current_row,
+                    "Vth_current_multiplier": multiplier,
+                    "Vth_base_normalized_current_A": (
+                        base_normalized_current_a
+                    ),
+                    "Vth_low_shift_mV": 1000.0
+                    * (
+                        float(current_row["Vth_low_V"])
+                        - float(base_by_key[key]["Vth_low_V"])
+                    ),
+                    "Vth_high_shift_mV": 1000.0
+                    * (
+                        float(current_row["Vth_high_V"])
+                        - float(base_by_key[key]["Vth_high_V"])
+                    ),
+                    "DIBL_change_mV_per_V": (
+                        float(current_row["DIBL_mV_per_V"])
+                        - float(base_by_key[key]["DIBL_mV_per_V"])
+                    ),
+                }
+            )
+
+    return pd.DataFrame(rows, columns=VTH_DIBL_SENSITIVITY_COLUMNS)
+
+
 def analyze_data(config: dict[str, Any], combined: pd.DataFrame) -> pd.DataFrame:
     settings = config["ss_extraction"]
     width_um = float(config["project"]["width_um"])
@@ -803,6 +1344,22 @@ def analyze_data(config: dict[str, Any], combined: pd.DataFrame) -> pd.DataFrame
     metrics = pd.DataFrame(rows, columns=METRICS_COLUMNS)
     output_dir = ROOT / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    vth_dibl_metrics = analyze_vth_dibl(config, combined)
+    vth_dibl_metrics.to_csv(
+        output_dir / "vth_dibl_metrics.csv",
+        index=False,
+        float_format=METRICS_FLOAT_FORMAT,
+        lineterminator="\n",
+    )
+    vth_dibl_sensitivity = analyze_vth_dibl_sensitivity(config, combined)
+    vth_dibl_sensitivity.to_csv(
+        output_dir / "vth_dibl_sensitivity.csv",
+        index=False,
+        float_format=METRICS_FLOAT_FORMAT,
+        lineterminator="\n",
+    )
+
     # Twelve significant digits retain far more precision than the published
     # tables while suppressing platform-specific last-bit regression noise.
     metrics.to_csv(
@@ -812,7 +1369,13 @@ def analyze_data(config: dict[str, Any], combined: pd.DataFrame) -> pd.DataFrame
         lineterminator="\n",
     )
     create_plots(combined, metrics)
-    write_comparison_summary(config, metrics)
+    create_vth_dibl_plots(vth_dibl_metrics, vth_dibl_sensitivity)
+    write_comparison_summary(
+        config,
+        metrics,
+        vth_dibl_metrics,
+        vth_dibl_sensitivity,
+    )
     return metrics
 
 
@@ -873,7 +1436,115 @@ def create_plots(combined: pd.DataFrame, metrics: pd.DataFrame) -> None:
         plt.close(fig)
 
 
-def write_comparison_summary(config: dict[str, Any], metrics: pd.DataFrame) -> None:
+def create_vth_dibl_plots(
+    metrics: pd.DataFrame, sensitivity: pd.DataFrame
+) -> None:
+    figure_dir = ROOT / "results" / "figures"
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    colors = {"HP": "#D55E00", "LP": "#0072B2"}
+
+    def comparison_label(row: pd.Series) -> str:
+        basis = (
+            "common VDD"
+            if row["comparison_basis"] == "common_vdd"
+            else "nominal VDD"
+        )
+        return f"{row['application_type']}\n{basis}"
+
+    labels = [comparison_label(row) for _, row in metrics.iterrows()]
+    positions = np.arange(len(metrics), dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.2), constrained_layout=True)
+    width = 0.36
+    ax.bar(
+        positions - width / 2,
+        metrics["Vth_low_V"],
+        width,
+        color="#56B4E9",
+        label="Low VDS",
+    )
+    ax.bar(
+        positions + width / 2,
+        metrics["Vth_high_V"],
+        width,
+        color="#E69F00",
+        label="High VDS",
+    )
+    ax.set_xticks(positions, labels)
+    ax.set_ylabel("Threshold voltage, Vth (V)")
+    ax.set_title("Constant-current threshold-voltage comparison")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend()
+    fig.savefig(figure_dir / "vth_comparison.png", dpi=180)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.2), constrained_layout=True)
+    ax.bar(
+        positions,
+        metrics["DIBL_mV_per_V"],
+        color=[colors[str(value)] for value in metrics["application_type"]],
+    )
+    ax.set_xticks(positions, labels)
+    ax.set_ylabel("DIBL (mV/V)")
+    ax.set_title("Drain-induced barrier-lowering comparison")
+    ax.grid(True, axis="y", alpha=0.25)
+    fig.savefig(figure_dir / "dibl_comparison.png", dpi=180)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 4.8), constrained_layout=True)
+    group_columns = [
+        "application_type",
+        "comparison_basis",
+        "low_bias_label",
+        "high_bias_label",
+    ]
+    line_styles = {"Vth_low_V": "-", "Vth_high_V": "--"}
+    for group_key, frame in sensitivity.groupby(group_columns, sort=False):
+        application_type = str(group_key[0])
+        basis = str(group_key[1])
+        basis_label = "common" if basis == "common_vdd" else "nominal"
+        frame = frame.sort_values("Vth_current_multiplier")
+        for column, line_style in line_styles.items():
+            bias_label = "low VDS" if column == "Vth_low_V" else "high VDS"
+            axes[0].plot(
+                frame["Vth_current_multiplier"],
+                frame[column],
+                color=colors[application_type],
+                linestyle=line_style,
+                marker="o",
+                linewidth=2,
+                label=f"{application_type} {basis_label}, {bias_label}",
+            )
+        axes[1].plot(
+            frame["Vth_current_multiplier"],
+            frame["DIBL_mV_per_V"],
+            color=colors[application_type],
+            linestyle="-" if basis == "common_vdd" else "--",
+            marker="o",
+            linewidth=2,
+            label=f"{application_type} {basis_label}",
+        )
+
+    for ax in axes:
+        ax.set_xscale("log")
+        ax.set_xlabel("Normalized-current multiplier")
+        ax.grid(True, which="both", alpha=0.25)
+        ax.legend(fontsize=8)
+    axes[0].set_ylabel("Threshold voltage, Vth (V)")
+    axes[0].set_title("Vth criterion sensitivity")
+    axes[1].set_ylabel("DIBL (mV/V)")
+    axes[1].set_title("DIBL criterion sensitivity")
+    fig.suptitle("Constant-current extraction sensitivity")
+    fig.savefig(figure_dir / "vth_dibl_sensitivity.png", dpi=180)
+    plt.close(fig)
+
+
+def write_comparison_summary(
+    config: dict[str, Any],
+    metrics: pd.DataFrame,
+    vth_dibl_metrics: pd.DataFrame | None = None,
+    vth_dibl_sensitivity: pd.DataFrame | None = None,
+) -> None:
     lines = [
         "# Metric extraction summary",
         "",
@@ -929,6 +1600,104 @@ def write_comparison_summary(config: dict[str, Any], metrics: pd.DataFrame) -> N
                 "process-yield results.",
             ]
         )
+
+    if vth_dibl_metrics is not None and not vth_dibl_metrics.empty:
+        lines.extend(
+            [
+                "",
+                "## Threshold voltage and DIBL",
+                "",
+                "Vth uses the configured constant-current criterion with linear "
+                "interpolation in log10(ID)-VGS space. DIBL is "
+                "1000 x (Vth_low - Vth_high) / (VDS_high - VDS_low), in mV/V.",
+                "",
+                "| Model | Basis | VDS low/high (V) | Vth low (V) | Vth high (V) | DIBL (mV/V) |",
+                "|---|---|---:|---:|---:|---:|",
+            ]
+        )
+        for _, row in vth_dibl_metrics.iterrows():
+            basis = (
+                "common VDD"
+                if row["comparison_basis"] == "common_vdd"
+                else "model nominal VDD"
+            )
+            lines.append(
+                f"| {row['application_type']} | {basis} | "
+                f"{row['VDS_low_V']:.3g}/{row['VDS_high_V']:.3g} | "
+                f"{row['Vth_low_V']:.6f} | {row['Vth_high_V']:.6f} | "
+                f"{row['DIBL_mV_per_V']:.6f} |"
+            )
+        project = config["project"]
+        if bool(project.get("include_common_vdd_curve", False)):
+            common_vdd_v = float(project["common_vdd_v"])
+            hp_nominal_vdd_v = float(
+                config["models"]["HP"]["expected_nominal_vdd_v"]
+            )
+            lp_nominal_vdd_v = float(
+                config["models"]["LP"]["expected_nominal_vdd_v"]
+            )
+            if math.isclose(
+                hp_nominal_vdd_v,
+                common_vdd_v,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ) and not math.isclose(
+                lp_nominal_vdd_v,
+                common_vdd_v,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            ):
+                lines.extend(
+                    [
+                        "",
+                        "HP has one row because its model-nominal VDD equals "
+                        f"the configured common VDD ({common_vdd_v:g} V); the "
+                        "duplicate comparison is intentionally omitted. "
+                        f"LP retains separate common-{common_vdd_v:g}-V and "
+                        f"model-nominal-{lp_nominal_vdd_v:g}-V rows.",
+                    ]
+                )
+
+    if vth_dibl_sensitivity is not None and not vth_dibl_sensitivity.empty:
+        lines.extend(
+            [
+                "",
+                "## Vth-criterion sensitivity",
+                "",
+                "The configured normalized-current multipliers are applied to every "
+                "Vth/DIBL comparison. The ranges below are descriptive extraction "
+                "sensitivity, not statistical confidence intervals.",
+                "",
+                "| Model | Basis | Multiplier range | Vth low range (V) | "
+                "Vth high range (V) | DIBL range (mV/V) |",
+                "|---|---|---:|---:|---:|---:|",
+            ]
+        )
+        group_columns = [
+            "application_type",
+            "comparison_basis",
+            "low_bias_label",
+            "high_bias_label",
+        ]
+        for group_key, frame in vth_dibl_sensitivity.groupby(
+            group_columns, sort=False
+        ):
+            basis = (
+                "common VDD"
+                if group_key[1] == "common_vdd"
+                else "model nominal VDD"
+            )
+            lines.append(
+                f"| {group_key[0]} | {basis} | "
+                f"{frame['Vth_current_multiplier'].min():.3g}-"
+                f"{frame['Vth_current_multiplier'].max():.3g}x | "
+                f"{frame['Vth_low_V'].min():.6f}-"
+                f"{frame['Vth_low_V'].max():.6f} | "
+                f"{frame['Vth_high_V'].min():.6f}-"
+                f"{frame['Vth_high_V'].max():.6f} | "
+                f"{frame['DIBL_mV_per_V'].min():.6f}-"
+                f"{frame['DIBL_mV_per_V'].max():.6f} |"
+            )
 
     (ROOT / "results" / "comparison_summary.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
@@ -1082,7 +1851,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Wrote {len(combined)} processed rows.")
         elif args.command == "analyze":
             metrics = analyze_data(config, load_processed())
-            print(f"Wrote {len(metrics)} metric rows and figures.")
+            vth_dibl_rows = len(
+                pd.read_csv(ROOT / "results" / "vth_dibl_metrics.csv")
+            )
+            sensitivity_rows = len(
+                pd.read_csv(ROOT / "results" / "vth_dibl_sensitivity.csv")
+            )
+            print(
+                f"Wrote {len(metrics)} Ion/Ioff/SS metric rows, "
+                f"{vth_dibl_rows} Vth/DIBL rows, "
+                f"{sensitivity_rows} sensitivity rows, and figures."
+            )
         elif args.command == "synthetic":
             frame = generate_synthetic_data(config)
             print(f"Wrote {len(frame)} synthetic validation rows.")

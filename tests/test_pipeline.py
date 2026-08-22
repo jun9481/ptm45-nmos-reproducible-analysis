@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -16,15 +17,365 @@ from ptm_pipeline import (  # noqa: E402
     ModelInfo,
     PipelineError,
     SweepSpec,
+    VTH_DIBL_COLUMNS,
+    VTH_DIBL_SENSITIVITY_COLUMNS,
+    analyze_data,
+    analyze_vth_dibl,
+    analyze_vth_dibl_sensitivity,
     build_sweep_specs,
+    calculate_dibl_mv_per_v,
     expected_row_count,
     extract_ss,
+    extract_vth_constant_current,
+    load_config,
     parse_model_metadata,
     parse_wrdata,
     render_netlist,
     sha256_file,
     validate_models,
 )
+
+
+class VthDiblTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.config = load_config(PROJECT_ROOT / "project_config.json")
+        cls.combined = pd.read_csv(
+            PROJECT_ROOT / "data" / "processed" / "ptm45_combined.csv"
+        )
+
+    def test_vth_uses_log_interpolation_and_width_length_ratio(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "VGS_V": [0.2, 0.3],
+                "ID_A": [2e-7, 2e-5],
+            }
+        )
+
+        vth_v, target_current_a = extract_vth_constant_current(
+            frame=frame,
+            normalized_current_a=1e-7,
+            width_um=1.0,
+            length_um=0.05,
+            interpolation="log10_id_linear",
+        )
+
+        self.assertAlmostEqual(target_current_a, 2e-6)
+        self.assertAlmostEqual(vth_v, 0.25)
+
+    def test_vth_rejects_unknown_interpolation(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "VGS_V": [0.2, 0.3],
+                "ID_A": [2e-7, 2e-5],
+            }
+        )
+
+        with self.assertRaises(PipelineError):
+            extract_vth_constant_current(
+                frame=frame,
+                normalized_current_a=1e-7,
+                width_um=1.0,
+                length_um=0.05,
+                interpolation="linear_id",
+            )
+
+    def test_vth_rejects_absent_crossing(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "VGS_V": [0.2, 0.3, 0.4],
+                "ID_A": [2e-8, 2e-7, 8e-7],
+            }
+        )
+
+        with self.assertRaisesRegex(PipelineError, "found 0"):
+            extract_vth_constant_current(
+                frame=frame,
+                normalized_current_a=1e-7,
+                width_um=1.0,
+                length_um=0.05,
+                interpolation="log10_id_linear",
+            )
+
+    def test_vth_rejects_multiple_crossings(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "VGS_V": [0.2, 0.3, 0.4, 0.5],
+                "ID_A": [2e-7, 2e-5, 2e-7, 2e-5],
+            }
+        )
+
+        with self.assertRaisesRegex(PipelineError, "found 3"):
+            extract_vth_constant_current(
+                frame=frame,
+                normalized_current_a=1e-7,
+                width_um=1.0,
+                length_um=0.05,
+                interpolation="log10_id_linear",
+            )
+
+    def test_vth_rejects_downward_or_exact_plus_later_crossing(self) -> None:
+        cases = (
+            pd.DataFrame(
+                {
+                    "VGS_V": [0.2, 0.3, 0.4],
+                    "ID_A": [3e-6, 1e-6, 3e-6],
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "VGS_V": [0.2, 0.3, 0.4, 0.5],
+                    "ID_A": [2e-7, 2e-6, 2e-7, 2e-5],
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "VGS_V": [0.2, 0.3, 0.4, 0.5],
+                    "ID_A": [2e-7, 2e-6, 2e-6, 2e-5],
+                }
+            ),
+        )
+        for frame in cases:
+            with self.subTest(current=frame["ID_A"].tolist()):
+                with self.assertRaises(PipelineError):
+                    extract_vth_constant_current(
+                        frame=frame,
+                        normalized_current_a=1e-7,
+                        width_um=1.0,
+                        length_um=0.05,
+                        interpolation="log10_id_linear",
+                    )
+
+    def test_vth_rejects_nonfinite_data_in_crossing_region(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "VGS_V": [0.2, 0.3, 0.4],
+                "ID_A": [2e-7, np.nan, 2e-5],
+            }
+        )
+
+        with self.assertRaisesRegex(PipelineError, "non-finite"):
+            extract_vth_constant_current(
+                frame=frame,
+                normalized_current_a=1e-7,
+                width_um=1.0,
+                length_um=0.05,
+                interpolation="log10_id_linear",
+            )
+
+    def test_dibl_returns_positive_mv_per_v(self) -> None:
+        dibl_mv_per_v = calculate_dibl_mv_per_v(
+            vth_low_v=0.50,
+            vth_high_v=0.40,
+            low_vds_v=0.05,
+            high_vds_v=1.05,
+        )
+
+        self.assertAlmostEqual(dibl_mv_per_v, 100.0)
+
+    def test_dibl_rejects_non_increasing_vds(self) -> None:
+        with self.assertRaises(PipelineError):
+            calculate_dibl_mv_per_v(
+                vth_low_v=0.50,
+                vth_high_v=0.40,
+                low_vds_v=1.0,
+                high_vds_v=0.05,
+            )
+
+    def test_bundled_vth_dibl_regression(self) -> None:
+        result = analyze_vth_dibl(self.config, self.combined)
+
+        self.assertEqual(list(result.columns), VTH_DIBL_COLUMNS)
+        self.assertEqual(len(result), 3)
+        self.assertFalse(
+            result.duplicated(
+                subset=["application_type", "comparison_basis"]
+            ).any()
+        )
+
+        expected = [
+            (
+                "HP",
+                "common_vdd",
+                "nominal_vdd",
+                0.323646393618,
+                0.184795847050,
+                146.158470072,
+            ),
+            (
+                "LP",
+                "common_vdd",
+                "common_1v",
+                0.530393010572,
+                0.457564061510,
+                76.662051644,
+            ),
+            (
+                "LP",
+                "model_nominal_vdd",
+                "nominal_vdd",
+                0.530393010572,
+                0.450641601991,
+                75.953722458,
+            ),
+        ]
+        actual = list(
+            result[
+                [
+                    "application_type",
+                    "comparison_basis",
+                    "high_bias_label",
+                    "Vth_low_V",
+                    "Vth_high_V",
+                    "DIBL_mV_per_V",
+                ]
+            ].itertuples(index=False, name=None)
+        )
+        self.assertEqual(
+            [(row[0], row[1], row[2]) for row in actual],
+            [(row[0], row[1], row[2]) for row in expected],
+        )
+        for actual_row, expected_row in zip(actual, expected, strict=True):
+            self.assertAlmostEqual(actual_row[3], expected_row[3], places=10)
+            self.assertAlmostEqual(actual_row[4], expected_row[4], places=10)
+            self.assertAlmostEqual(actual_row[5], expected_row[5], places=9)
+
+        np.testing.assert_allclose(
+            result["Vth_target_ID_A"].to_numpy(dtype=float),
+            np.full(3, 1e-7 * 1.0 / 0.045),
+            rtol=1e-12,
+            atol=0.0,
+        )
+        self.assertTrue((result["DIBL_mV_per_V"] > 0).all())
+
+    def test_vth_dibl_rejects_processed_dimension_mismatch(self) -> None:
+        mismatches = {
+            "W_um": 2.0,
+            "L_um": 0.090,
+            "temperature_C": 125.0,
+        }
+        for column, value in mismatches.items():
+            with self.subTest(column=column):
+                combined = self.combined.copy()
+                combined[column] = value
+                with self.assertRaisesRegex(PipelineError, column):
+                    analyze_vth_dibl(self.config, combined)
+
+    def test_bundled_vth_dibl_sensitivity_structure(self) -> None:
+        result = analyze_vth_dibl_sensitivity(self.config, self.combined)
+        multipliers = np.asarray(
+            self.config["vth_extraction"]["sensitivity_multipliers"],
+            dtype=float,
+        )
+        key_columns = ["application_type", "comparison_basis"]
+
+        self.assertEqual(
+            list(result.columns), VTH_DIBL_SENSITIVITY_COLUMNS
+        )
+        self.assertEqual(len(result), 3 * len(multipliers))
+        self.assertEqual(result.groupby(key_columns).ngroups, 3)
+        self.assertFalse(
+            result.duplicated(
+                subset=key_columns + ["Vth_current_multiplier"]
+            ).any()
+        )
+
+        base_normalized_current = float(
+            self.config["vth_extraction"]["normalized_current_a"]
+        )
+        width_um = float(self.config["project"]["width_um"])
+        length_um = float(self.config["project"]["length_um"])
+        np.testing.assert_allclose(
+            result["Vth_base_normalized_current_A"],
+            base_normalized_current,
+            rtol=0.0,
+            atol=0.0,
+        )
+        np.testing.assert_allclose(
+            result["Vth_normalized_current_A"],
+            base_normalized_current * result["Vth_current_multiplier"],
+            rtol=1e-14,
+            atol=0.0,
+        )
+        np.testing.assert_allclose(
+            result["Vth_target_ID_A"],
+            result["Vth_normalized_current_A"] * width_um / length_um,
+            rtol=1e-14,
+            atol=0.0,
+        )
+
+        for _, group in result.groupby(key_columns, sort=False):
+            np.testing.assert_allclose(
+                group["Vth_current_multiplier"],
+                multipliers,
+                rtol=0.0,
+                atol=0.0,
+            )
+            ordered = group.sort_values("Vth_current_multiplier")
+            self.assertTrue((ordered["Vth_low_V"].diff().dropna() > 0).all())
+            self.assertTrue((ordered["Vth_high_V"].diff().dropna() > 0).all())
+
+        base_rows = result[np.isclose(result["Vth_current_multiplier"], 1.0)]
+        self.assertEqual(len(base_rows), 3)
+        np.testing.assert_allclose(
+            base_rows[
+                [
+                    "Vth_low_shift_mV",
+                    "Vth_high_shift_mV",
+                    "DIBL_change_mV_per_V",
+                ]
+            ],
+            0.0,
+            rtol=0.0,
+            atol=1e-12,
+        )
+
+    def test_analyze_writes_reproducible_vth_dibl_csvs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with (
+                patch("ptm_pipeline.ROOT", root),
+                patch("ptm_pipeline.create_plots"),
+                patch("ptm_pipeline.create_vth_dibl_plots"),
+                patch("ptm_pipeline.write_comparison_summary"),
+            ):
+                analyze_data(self.config, self.combined)
+
+            output_path = root / "results" / "vth_dibl_metrics.csv"
+            self.assertTrue(output_path.is_file())
+            output_bytes = output_path.read_bytes()
+            self.assertTrue(output_bytes.endswith(b"\n"))
+            self.assertNotIn(b"\r\n", output_bytes)
+
+            written = pd.read_csv(output_path)
+            self.assertEqual(list(written.columns), VTH_DIBL_COLUMNS)
+            self.assertEqual(len(written), 3)
+            np.testing.assert_allclose(
+                written["DIBL_mV_per_V"].to_numpy(dtype=float),
+                np.array([146.158470072, 76.662051644, 75.953722458]),
+                rtol=1e-11,
+                atol=1e-9,
+            )
+
+            sensitivity_path = root / "results" / "vth_dibl_sensitivity.csv"
+            self.assertTrue(sensitivity_path.is_file())
+            sensitivity_bytes = sensitivity_path.read_bytes()
+            self.assertTrue(sensitivity_bytes.endswith(b"\n"))
+            self.assertNotIn(b"\r\n", sensitivity_bytes)
+
+            sensitivity = pd.read_csv(sensitivity_path)
+            self.assertEqual(
+                list(sensitivity.columns), VTH_DIBL_SENSITIVITY_COLUMNS
+            )
+            self.assertEqual(
+                len(sensitivity),
+                3
+                * len(
+                    self.config["vth_extraction"][
+                        "sensitivity_multipliers"
+                    ]
+                ),
+            )
 
 
 class ModelMetadataTests(unittest.TestCase):

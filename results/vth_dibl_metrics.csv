@@ -1,0 +1,4 @@
+application_type,comparison_basis,low_bias_label,high_bias_label,VDS_low_V,VDS_high_V,nominal_VDD_V,Vth_normalized_current_A,Vth_target_ID_A,Vth_low_V,Vth_high_V,DIBL_mV_per_V,Vth_method,Vth_interpolation
+HP,common_vdd,low_vds,nominal_vdd,0.05,1,1,1e-07,2.22222222222e-06,0.323646393618,0.18479584705,146.158470072,constant_current,log10_id_linear
+LP,common_vdd,low_vds,common_1v,0.05,1,1.1,1e-07,2.22222222222e-06,0.530393010572,0.45756406151,76.662051644,constant_current,log10_id_linear
+LP,model_nominal_vdd,low_vds,nominal_vdd,0.05,1.1,1.1,1e-07,2.22222222222e-06,0.530393010572,0.450641601991,75.953722458,constant_current,log10_id_linear
