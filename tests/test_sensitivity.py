@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ss_sensitivity import generate_tables, summarize
+from ss_sensitivity import generate_tables, published_percent_deviation, summarize
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +64,27 @@ class SensitivityRegressionTests(unittest.TestCase):
             self.assertFalse(
                 frame["touches_lower_sweep_edge"].fillna(False).astype(bool).any()
             )
+
+        baseline_cutoff = self.cutoff[
+            np.isclose(self.cutoff["max_ion_fraction"], 0.01)
+        ]
+        self.assertEqual(len(baseline_cutoff), 2)
+        self.assertTrue(
+            baseline_cutoff["deviation_from_baseline_pct"].eq(0.0).all()
+        )
+
+        local_ss = 86.3334386819101
+        runner_ss = 86.3334386819099
+        baseline_ss = 86.6480245274117
+        self.assertEqual(f"{local_ss:.12g}", f"{runner_ss:.12g}")
+        self.assertEqual(
+            published_percent_deviation(local_ss, baseline_ss),
+            published_percent_deviation(runner_ss, baseline_ss),
+        )
+        self.assertEqual(
+            published_percent_deviation(86.6480245274117, 86.6480245274),
+            0.0,
+        )
 
 
 if __name__ == "__main__":

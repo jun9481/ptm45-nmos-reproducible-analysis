@@ -11,14 +11,21 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from verify_release import (  # noqa: E402
+    VTH_DIBL_EXACT_COLUMNS,
+    VTH_DIBL_ROW_KEY_COLUMNS,
     ReleaseIntegrityError,
     compare_metric_frames,
+    compare_result_frames,
     find_forbidden_artifacts,
     recompute_metrics,
+    recompute_vth_dibl,
     verify_bundled_metrics,
+    verify_bundled_vth_dibl,
     verify_forbidden_artifacts_absent,
     verify_manifest,
 )
+
+from ptm_pipeline import VTH_DIBL_COLUMNS  # noqa: E402
 
 
 def file_digest(path: Path) -> str:
@@ -56,6 +63,19 @@ class ManifestVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseIntegrityError, "not listed"):
                 verify_manifest(root, manifest, require_complete=True)
 
+            (root / "unlisted.txt").unlink()
+            root_git = root / ".git" / "config"
+            root_git.parent.mkdir(parents=True)
+            root_git.write_text("[core]\n", encoding="utf-8")
+            entries = verify_manifest(root, manifest, require_complete=True)
+            self.assertEqual(len(entries), 1)
+
+            nested_git = root / "nested" / ".git" / "config"
+            nested_git.parent.mkdir(parents=True)
+            nested_git.write_text("[core]\n", encoding="utf-8")
+            with self.assertRaisesRegex(ReleaseIntegrityError, "not listed"):
+                verify_manifest(root, manifest, require_complete=True)
+
             manifest.write_text(f"{'0' * 64}  ./../escape.txt\n", encoding="utf-8")
             with self.assertRaisesRegex(ReleaseIntegrityError, "Unsafe manifest path"):
                 verify_manifest(root, manifest)
@@ -73,11 +93,16 @@ class PublicBundleTests(unittest.TestCase):
             "raw simulator output": Path("data/raw/ptm45_hp_raw.txt"),
             "simulator log": Path("results/logs/ptm45_hp.log"),
             "workbook sidecar": Path("results/validation/check.xlsx.inspect.ndjson"),
+            "virtual environment": Path(".venv/pyvenv.cfg"),
+            "nested Git metadata": Path("vendor/project/.git/config"),
         }
         for label, relative_path in cases.items():
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     root = Path(temporary_directory)
+                    root_git = root / ".git" / "config"
+                    root_git.parent.mkdir(parents=True)
+                    root_git.write_text("[core]\n", encoding="utf-8")
                     artifact = root / relative_path
                     artifact.parent.mkdir(parents=True, exist_ok=True)
                     artifact.write_text("fixture\n", encoding="utf-8")
@@ -102,6 +127,49 @@ class BundledMetricVerificationTests(unittest.TestCase):
         bundled.loc[0, "Ion_A"] *= 1.01
         with self.assertRaisesRegex(ReleaseIntegrityError, "Ion_A"):
             compare_metric_frames(bundled, self.recalculated)
+
+
+class BundledVthDiblVerificationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.recalculated, cls.sensitivity = recompute_vth_dibl(PROJECT_ROOT)
+
+    def test_bundled_vth_dibl_tables_match_recalculation(self) -> None:
+        metrics, sensitivity = verify_bundled_vth_dibl(PROJECT_ROOT)
+        self.assertEqual(len(metrics), 3)
+        self.assertEqual(len(sensitivity), 15)
+
+    def test_detects_vth_dibl_tampering_outside_tolerance(self) -> None:
+        bundled = pd.read_csv(
+            PROJECT_ROOT / "results" / "vth_dibl_metrics.csv",
+            float_precision="round_trip",
+        )
+        bundled.loc[0, "DIBL_mV_per_V"] *= 1.01
+        with self.assertRaisesRegex(ReleaseIntegrityError, "DIBL_mV_per_V"):
+            compare_result_frames(
+                bundled,
+                self.recalculated,
+                columns=VTH_DIBL_COLUMNS,
+                row_key_columns=VTH_DIBL_ROW_KEY_COLUMNS,
+                exact_columns=VTH_DIBL_EXACT_COLUMNS,
+                label="Vth/DIBL",
+            )
+
+    def test_rejects_extra_vth_dibl_columns(self) -> None:
+        bundled = pd.read_csv(
+            PROJECT_ROOT / "results" / "vth_dibl_metrics.csv",
+            float_precision="round_trip",
+        )
+        bundled["unexpected"] = 1
+        with self.assertRaisesRegex(ReleaseIntegrityError, "unexpected schema"):
+            compare_result_frames(
+                bundled,
+                self.recalculated,
+                columns=VTH_DIBL_COLUMNS,
+                row_key_columns=VTH_DIBL_ROW_KEY_COLUMNS,
+                exact_columns=VTH_DIBL_EXACT_COLUMNS,
+                label="Vth/DIBL",
+            )
 
 
 if __name__ == "__main__":

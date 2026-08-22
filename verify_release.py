@@ -5,8 +5,9 @@ The verifier performs three independent checks without modifying the release:
 
 1. every file named by ``RELEASE_MANIFEST.sha256`` matches its SHA-256 hash;
 2. model cards, generated netlists, and runtime-cache files are absent; and
-3. the bundled metrics agree with an in-memory recalculation from the bundled
-   processed data using the extraction functions in ``ptm_pipeline.py``.
+3. the bundled Ion/Ioff/SS and Vth/DIBL tables agree with in-memory
+   recalculations from the bundled processed data using the extraction
+   functions in ``ptm_pipeline.py``.
 
 Run it from any directory with::
 
@@ -41,7 +42,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from ptm_pipeline import (  # noqa: E402
     IOFF_DEFINITION_VGS_V,
     METRICS_COLUMNS,
+    VTH_DIBL_COLUMNS,
+    VTH_DIBL_SENSITIVITY_COLUMNS,
+    PipelineError,
     analyze_curve,
+    analyze_vth_dibl,
+    analyze_vth_dibl_sensitivity,
     format_voltage_for_name,
     load_config,
     select_curve,
@@ -57,6 +63,21 @@ EXACT_METRIC_COLUMNS = (
     "SS_fit_points",
     "SS_method",
 )
+VTH_DIBL_ROW_KEY_COLUMNS = ("application_type", "comparison_basis")
+VTH_DIBL_EXACT_COLUMNS = (
+    "application_type",
+    "comparison_basis",
+    "low_bias_label",
+    "high_bias_label",
+    "Vth_method",
+    "Vth_interpolation",
+)
+VTH_DIBL_SENSITIVITY_ROW_KEY_COLUMNS = (
+    "application_type",
+    "comparison_basis",
+    "Vth_current_multiplier",
+)
+VTH_DIBL_SENSITIVITY_EXACT_COLUMNS = VTH_DIBL_EXACT_COLUMNS
 CACHE_DIRECTORY_NAMES = {
     ".matplotlib-cache",
     ".mypy_cache",
@@ -65,6 +86,7 @@ CACHE_DIRECTORY_NAMES = {
     "__pycache__",
 }
 CACHE_FILE_SUFFIXES = {".pyc", ".pyo"}
+VIRTUAL_ENV_DIRECTORY_NAMES = {".venv", "venv"}
 
 
 class ReleaseIntegrityError(RuntimeError):
@@ -140,13 +162,14 @@ def _release_files(root: Path, manifest_path: Path) -> set[PurePosixPath]:
     manifest_path = manifest_path.resolve()
     paths: set[PurePosixPath] = set()
     for path in root.rglob("*"):
-        if ".git" in path.relative_to(root).parts:
+        relative = path.relative_to(root)
+        if relative.parts and relative.parts[0].lower() == ".git":
             continue
         if not (path.is_file() or path.is_symlink()):
             continue
         if path.resolve() == manifest_path:
             continue
-        paths.add(PurePosixPath(path.relative_to(root).as_posix()))
+        paths.add(PurePosixPath(relative.as_posix()))
     return paths
 
 
@@ -214,19 +237,23 @@ def find_forbidden_artifacts(root: Path) -> list[str]:
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         parts = relative.parts
-        if ".git" in parts:
+        lower_parts = tuple(part.lower() for part in parts)
+        if lower_parts and lower_parts[0] == ".git":
             continue
         # Empty cache/generated directories are not files and therefore are not
         # present in a ZIP or Git tree. Only distributable artifacts are flagged.
         if not (path.is_file() or path.is_symlink()):
             continue
 
-        lower_parts = tuple(part.lower() for part in parts)
         lower_name = path.name.lower()
         reason: str | None = None
-        if lower_parts and lower_parts[0] == "models" and lower_name != "readme.md":
+        if ".git" in lower_parts:
+            reason = "nested Git metadata"
+        elif any(part in VIRTUAL_ENV_DIRECTORY_NAMES for part in lower_parts):
+            reason = "virtual environment"
+        elif lower_parts and lower_parts[0] == "models" and lower_name != "readme.md":
             reason = "model-card candidate"
-        elif any(part in CACHE_DIRECTORY_NAMES for part in parts):
+        elif any(part in CACHE_DIRECTORY_NAMES for part in lower_parts):
             reason = "runtime cache"
         elif path.suffix.lower() in CACHE_FILE_SUFFIXES:
             reason = "compiled Python cache"
@@ -360,6 +387,8 @@ def compare_metric_frames(
         raise ReleaseIntegrityError(
             "Bundled metrics are missing columns: " + ", ".join(missing_columns)
         )
+    if list(bundled.columns) != METRICS_COLUMNS:
+        raise ReleaseIntegrityError("Bundled metrics have an unexpected schema.")
     if list(recalculated.columns) != METRICS_COLUMNS:
         raise ReleaseIntegrityError("Recalculated metrics have an unexpected schema.")
 
@@ -436,6 +465,151 @@ def verify_bundled_metrics(
     return recalculated
 
 
+def compare_result_frames(
+    bundled: pd.DataFrame,
+    recalculated: pd.DataFrame,
+    *,
+    columns: list[str],
+    row_key_columns: tuple[str, ...],
+    exact_columns: tuple[str, ...],
+    label: str,
+    rtol: float = 1e-10,
+    atol: float = 1e-15,
+) -> None:
+    """Compare a bundled result table with an independently recalculated one."""
+    missing_columns = [column for column in columns if column not in bundled]
+    if missing_columns:
+        raise ReleaseIntegrityError(
+            f"Bundled {label} results are missing columns: "
+            + ", ".join(missing_columns)
+        )
+    if list(bundled.columns) != columns:
+        raise ReleaseIntegrityError(
+            f"Bundled {label} results have an unexpected schema."
+        )
+    if list(recalculated.columns) != columns:
+        raise ReleaseIntegrityError(
+            f"Recalculated {label} results have an unexpected schema."
+        )
+
+    def index_rows(
+        frame: pd.DataFrame, source: str
+    ) -> dict[tuple[str, ...], pd.Series]:
+        rows: dict[tuple[str, ...], pd.Series] = {}
+        for _, row in frame.iterrows():
+            key = tuple(str(row[column]) for column in row_key_columns)
+            if key in rows:
+                raise ReleaseIntegrityError(
+                    f"Duplicate {source} {label} row: {key}"
+                )
+            rows[key] = row
+        return rows
+
+    expected_rows = index_rows(bundled, "bundled")
+    actual_rows = index_rows(recalculated, "recalculated")
+    if expected_rows.keys() != actual_rows.keys():
+        missing = sorted(expected_rows.keys() - actual_rows.keys())
+        extra = sorted(actual_rows.keys() - expected_rows.keys())
+        raise ReleaseIntegrityError(
+            f"{label} row-key mismatch; missing recalculations={missing}, "
+            f"extra={extra}"
+        )
+
+    failures: list[str] = []
+    numeric_columns = [
+        column for column in columns if column not in exact_columns
+    ]
+    for key in sorted(expected_rows):
+        expected = expected_rows[key]
+        actual = actual_rows[key]
+        for column in exact_columns:
+            if str(expected[column]) != str(actual[column]):
+                failures.append(
+                    f"{key} {column}: expected {expected[column]!r}, "
+                    f"recalculated {actual[column]!r}"
+                )
+        for column in numeric_columns:
+            try:
+                expected_value = float(expected[column])
+                actual_value = float(actual[column])
+            except (TypeError, ValueError):
+                failures.append(f"{key} {column}: non-numeric value")
+                continue
+            if not (
+                math.isfinite(expected_value)
+                and math.isfinite(actual_value)
+                and math.isclose(
+                    expected_value,
+                    actual_value,
+                    rel_tol=rtol,
+                    abs_tol=atol,
+                )
+            ):
+                failures.append(
+                    f"{key} {column}: expected {expected_value:.17g}, "
+                    f"recalculated {actual_value:.17g}"
+                )
+
+    if failures:
+        raise ReleaseIntegrityError(
+            f"Bundled {label} verification failed:\n- "
+            + "\n- ".join(failures)
+        )
+
+
+def recompute_vth_dibl(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Recalculate the base and sensitivity Vth/DIBL result tables."""
+    root = root.resolve()
+    config = load_config(root / "project_config.json")
+    combined_path = root / "data" / "processed" / "ptm45_combined.csv"
+    if not combined_path.is_file():
+        raise ReleaseIntegrityError(f"Processed data not found: {combined_path}")
+    combined = pd.read_csv(combined_path, float_precision="round_trip")
+    return (
+        analyze_vth_dibl(config, combined),
+        analyze_vth_dibl_sensitivity(config, combined),
+    )
+
+
+def verify_bundled_vth_dibl(
+    root: Path, *, rtol: float = 1e-10, atol: float = 1e-15
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Verify the bundled base and sensitivity Vth/DIBL tables."""
+    result_dir = root.resolve() / "results"
+    metrics_path = result_dir / "vth_dibl_metrics.csv"
+    sensitivity_path = result_dir / "vth_dibl_sensitivity.csv"
+    for path in (metrics_path, sensitivity_path):
+        if not path.is_file():
+            raise ReleaseIntegrityError(f"Bundled Vth/DIBL result not found: {path}")
+
+    bundled_metrics = pd.read_csv(metrics_path, float_precision="round_trip")
+    bundled_sensitivity = pd.read_csv(
+        sensitivity_path, float_precision="round_trip"
+    )
+    recalculated_metrics, recalculated_sensitivity = recompute_vth_dibl(root)
+    compare_result_frames(
+        bundled_metrics,
+        recalculated_metrics,
+        columns=VTH_DIBL_COLUMNS,
+        row_key_columns=VTH_DIBL_ROW_KEY_COLUMNS,
+        exact_columns=VTH_DIBL_EXACT_COLUMNS,
+        label="Vth/DIBL",
+        rtol=rtol,
+        atol=atol,
+    )
+    compare_result_frames(
+        bundled_sensitivity,
+        recalculated_sensitivity,
+        columns=VTH_DIBL_SENSITIVITY_COLUMNS,
+        row_key_columns=VTH_DIBL_SENSITIVITY_ROW_KEY_COLUMNS,
+        exact_columns=VTH_DIBL_SENSITIVITY_EXACT_COLUMNS,
+        label="Vth/DIBL sensitivity",
+        rtol=rtol,
+        atol=atol,
+    )
+    return recalculated_metrics, recalculated_sensitivity
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -476,13 +650,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
         verify_forbidden_artifacts_absent(root)
         metrics = verify_bundled_metrics(root, rtol=args.rtol, atol=args.atol)
-    except (OSError, ValueError, KeyError, ReleaseIntegrityError) as exc:
+        vth_dibl, vth_dibl_sensitivity = verify_bundled_vth_dibl(
+            root, rtol=args.rtol, atol=args.atol
+        )
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        PipelineError,
+        ReleaseIntegrityError,
+    ) as exc:
         print(f"RELEASE VERIFICATION FAILED\n{exc}", file=sys.stderr)
         return 1
 
     print(f"PASS manifest: {len(entries)} files")
     print("PASS public bundle: no model cards, caches, or generated netlists")
     print(f"PASS metrics: {len(metrics)} rows recalculated within tolerance")
+    print(
+        "PASS Vth/DIBL: "
+        f"{len(vth_dibl)} base rows and "
+        f"{len(vth_dibl_sensitivity)} sensitivity rows recalculated"
+    )
     return 0
 
 

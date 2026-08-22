@@ -34,5 +34,11 @@
     "min_r_squared": 0.995,
     "max_ion_fraction": 0.01,
     "manual_vgs_ranges_v": {}
+  },
+  "vth_extraction": {
+    "method": "constant_current",
+    "normalized_current_a": 1e-7,
+    "interpolation": "log10_id_linear",
+    "sensitivity_multipliers": [0.1, 0.3, 1.0, 3.0, 10.0]
   }
 }

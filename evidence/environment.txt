@@ -1,5 +1,5 @@
-PTM45 MOSFET Final v1.0 environment record
-Validation date: 2026-08-15
+PTM45 MOSFET v1.1 pre-release environment record
+Latest validation date: 2026-08-22
 
 Observed successful source run:
 - Windows PowerShell
@@ -8,7 +8,7 @@ Observed successful source run:
 - Command: py ptm_pipeline.py all --ngspice "C:\Spice64\bin\ngspice_con.exe"
 - Output: Completed: 5 curves, 1245 data rows, 4 metric rows.
 
-Release assembly and regression-test environment:
+v1.1 release assembly and regression-test environment:
 - Python 3.12.13
 - NumPy 2.3.5
 - pandas 2.2.3

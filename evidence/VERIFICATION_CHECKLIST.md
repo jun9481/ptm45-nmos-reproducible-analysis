@@ -7,13 +7,16 @@
 - [x] Bundled combined CSV contains 5 curves and 1,245 rows
 - [x] All five curves start at −0.2 V with 5 mV spacing
 - [x] Metrics contains 4 rows and `Ioff_definition_VGS_V = 0`
-- [x] Latest summary and three figures were regenerated
+- [x] Latest summary, six figures, and Vth/DIBL CSV tables were regenerated
 - [x] Python–Excel workbook reports 16/16 PASS
 - [x] Sensitivity workbook reports PASS, 60/72 evaluable and no edge contacts
 - [x] 728-window, 72-grid and 10-cutoff source CSVs reproduce from code
 - [x] Model-card SHA-256 is enforced before simulator execution
 - [x] Generated netlists contain repository-relative model paths
-- [x] 20 unit, bundled-result, sensitivity and release-integrity tests pass
-- [x] Release manifest and semantic metric verifier pass
+- [x] 38 unit, integration, bundled-result, sensitivity and release-integrity tests pass
+- [x] Processed provenance and VDS/VGS sweep conditions are checked against configuration
+- [x] Sensitivity failures preserve the previous result files without partial updates
+- [x] Nested Git metadata and virtual environments are rejected from public bundles
+- [x] Release manifest and semantic Ion/Ioff/SS/Vth/DIBL verifiers pass
 - [x] Model cards, missing raw text and logs are disclosed rather than implied
 - [x] ZIP archive integrity test passes

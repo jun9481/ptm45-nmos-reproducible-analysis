@@ -1,4 +1,5 @@
-Source: successful Windows PowerShell run observed on 2026-08-15
+Original simulation source run
+Observed date: 2026-08-15
 
 Command:
 py ptm_pipeline.py all --ngspice "C:\Spice64\bin\ngspice_con.exe"
@@ -9,5 +10,18 @@ HP: model=nmos, nominal VDD=1 V, SHA-256=c9ed2e513523...
 LP: model=nmos, nominal VDD=1.1 V, SHA-256=397141eb8a81...
 Completed: 5 curves, 1245 data rows, 4 metric rows.
 
-This is a transcription of the supplied console evidence, not a newly executed
-ngspice run inside the release-assembly environment.
+This is a transcription of the supplied Windows console evidence, not a newly
+executed ngspice run inside the release-assembly environment.
+
+v1.1 analysis-only reproducibility run
+Verification date: 2026-08-22
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/ptm45-v11-mpl \
+  python -B ptm_pipeline.py analyze
+
+Recorded completion output:
+Wrote 4 Ion/Ioff/SS metric rows, 3 Vth/DIBL rows, 15 sensitivity rows, and figures.
+
+The v1.1 run reused the bundled 5-curve / 1,245-row processed simulation data.
+The PTM model cards are intentionally not redistributed in the public package.
