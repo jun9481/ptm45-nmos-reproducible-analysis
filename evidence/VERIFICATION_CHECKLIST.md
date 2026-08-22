@@ -13,7 +13,10 @@
 - [x] 728-window, 72-grid and 10-cutoff source CSVs reproduce from code
 - [x] Model-card SHA-256 is enforced before simulator execution
 - [x] Generated netlists contain repository-relative model paths
-- [x] 36 unit, integration, bundled-result, sensitivity and release-integrity tests pass
+- [x] 38 unit, integration, bundled-result, sensitivity and release-integrity tests pass
+- [x] Processed provenance and VDS/VGS sweep conditions are checked against configuration
+- [x] Sensitivity failures preserve the previous result files without partial updates
+- [x] Nested Git metadata and virtual environments are rejected from public bundles
 - [x] Release manifest and semantic Ion/Ioff/SS/Vth/DIBL verifiers pass
 - [x] Model cards, missing raw text and logs are disclosed rather than implied
 - [x] ZIP archive integrity test passes

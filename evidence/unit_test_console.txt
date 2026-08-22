@@ -11,11 +11,12 @@ Coverage:
 - Ion/Ioff/minimum-local-SS extraction and SS sensitivity reconstruction
 - constant-current Vth interpolation and positive DIBL definition
 - absent, multiple, downward, exact-duplicate and damaged Vth crossings
-- processed W/L/temperature agreement with project_config.json
+- processed technology/device/model/VDD/W/L/temperature and sweep agreement with project_config.json
+- no partial result updates when Vth sensitivity calculation fails
 - bundled 3-row Vth/DIBL and 15-row current-criterion sensitivity regression
 - CSV schema/LF serialization and required result artifacts
 - release manifest, forbidden artifacts and semantic table recalculation
 
 Result:
-Ran 36 tests
+Ran 38 tests
 OK

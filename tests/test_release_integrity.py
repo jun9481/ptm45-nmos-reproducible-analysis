@@ -63,6 +63,19 @@ class ManifestVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseIntegrityError, "not listed"):
                 verify_manifest(root, manifest, require_complete=True)
 
+            (root / "unlisted.txt").unlink()
+            root_git = root / ".git" / "config"
+            root_git.parent.mkdir(parents=True)
+            root_git.write_text("[core]\n", encoding="utf-8")
+            entries = verify_manifest(root, manifest, require_complete=True)
+            self.assertEqual(len(entries), 1)
+
+            nested_git = root / "nested" / ".git" / "config"
+            nested_git.parent.mkdir(parents=True)
+            nested_git.write_text("[core]\n", encoding="utf-8")
+            with self.assertRaisesRegex(ReleaseIntegrityError, "not listed"):
+                verify_manifest(root, manifest, require_complete=True)
+
             manifest.write_text(f"{'0' * 64}  ./../escape.txt\n", encoding="utf-8")
             with self.assertRaisesRegex(ReleaseIntegrityError, "Unsafe manifest path"):
                 verify_manifest(root, manifest)
@@ -80,11 +93,16 @@ class PublicBundleTests(unittest.TestCase):
             "raw simulator output": Path("data/raw/ptm45_hp_raw.txt"),
             "simulator log": Path("results/logs/ptm45_hp.log"),
             "workbook sidecar": Path("results/validation/check.xlsx.inspect.ndjson"),
+            "virtual environment": Path(".venv/pyvenv.cfg"),
+            "nested Git metadata": Path("vendor/project/.git/config"),
         }
         for label, relative_path in cases.items():
             with self.subTest(label=label):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     root = Path(temporary_directory)
+                    root_git = root / ".git" / "config"
+                    root_git.parent.mkdir(parents=True)
+                    root_git.write_text("[core]\n", encoding="utf-8")
                     artifact = root / relative_path
                     artifact.parent.mkdir(parents=True, exist_ok=True)
                     artifact.write_text("fixture\n", encoding="utf-8")

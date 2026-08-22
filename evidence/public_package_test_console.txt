@@ -14,14 +14,15 @@ Coverage:
 - constant-current Vth extraction with log10(ID)-VGS interpolation
 - positive DIBL calculation in mV/V
 - invalid, missing, downward and multiple-crossing rejection
-- processed-data W/L/temperature consistency checks
+- processed-data provenance and VDS/VGS sweep consistency checks
+- preservation of existing results when Vth sensitivity calculation fails
 - bundled 5-curve / 1,245-row data and four Ion/Ioff/SS metrics
 - three base Vth/DIBL rows and fifteen current-sensitivity rows
 - 728-window / 72-grid / 10-cutoff SS sensitivity reconstruction
 - forbidden public artifacts, strict CSV schemas, semantic recalculation and manifest logic
 
 Unit-test result:
-Ran 36 tests
+Ran 38 tests
 OK
 
 Release-verifier command:
@@ -30,7 +31,7 @@ PYTHONDONTWRITEBYTECODE=1 MPLCONFIGDIR=/tmp/ptm45-v11-mpl \
 
 Release-verifier coverage:
 - complete SHA-256 manifest for 54 public files
-- no private model cards, caches, virtual environments or generated raw/log artifacts
+- no private model cards, caches, virtual environments, nested Git metadata or generated raw/log artifacts
 - four Ion/Ioff/SS metric rows recalculated from bundled processed data
 - three base Vth/DIBL rows recalculated from bundled processed data
 - fifteen Vth/DIBL sensitivity rows recalculated for five current multipliers

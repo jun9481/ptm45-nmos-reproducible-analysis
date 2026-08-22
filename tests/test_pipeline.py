@@ -261,6 +261,27 @@ class VthDiblTests(unittest.TestCase):
                 with self.assertRaisesRegex(PipelineError, column):
                     analyze_vth_dibl(self.config, combined)
 
+    def test_vth_dibl_rejects_processed_provenance_or_sweep_mismatch(
+        self,
+    ) -> None:
+        cases = (
+            ("technology_nm", 7),
+            ("device_type", "PMOS"),
+            ("model_file_sha256", "0" * 64),
+            ("nominal_VDD_V", 9.9),
+            ("VDS_V", np.nan),
+            ("VGS_V", -0.199),
+        )
+        for column, value in cases:
+            with self.subTest(column=column):
+                combined = self.combined.copy()
+                if column in {"VDS_V", "VGS_V"}:
+                    combined.loc[combined.index[0], column] = value
+                else:
+                    combined[column] = value
+                with self.assertRaisesRegex(PipelineError, column):
+                    analyze_vth_dibl(self.config, combined)
+
     def test_bundled_vth_dibl_sensitivity_structure(self) -> None:
         result = analyze_vth_dibl_sensitivity(self.config, self.combined)
         multipliers = np.asarray(
@@ -376,6 +397,44 @@ class VthDiblTests(unittest.TestCase):
                     ]
                 ),
             )
+
+    def test_analyze_preserves_results_when_vth_sensitivity_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "results"
+            output_dir.mkdir()
+            sentinels = {
+                "metrics.csv": b"existing metrics\n",
+                "vth_dibl_metrics.csv": b"existing vth metrics\n",
+                "vth_dibl_sensitivity.csv": b"existing sensitivity\n",
+            }
+            for filename, content in sentinels.items():
+                (output_dir / filename).write_bytes(content)
+
+            with (
+                patch("ptm_pipeline.ROOT", root),
+                patch(
+                    "ptm_pipeline.analyze_vth_dibl_sensitivity",
+                    side_effect=PipelineError("forced sensitivity failure"),
+                ),
+                patch("ptm_pipeline.create_plots") as create_plots,
+                patch("ptm_pipeline.create_vth_dibl_plots") as create_vth_plots,
+                patch("ptm_pipeline.write_comparison_summary") as write_summary,
+            ):
+                with self.assertRaisesRegex(
+                    PipelineError, "forced sensitivity failure"
+                ):
+                    analyze_data(self.config, self.combined)
+
+            self.assertEqual(
+                sorted(path.name for path in output_dir.iterdir()),
+                sorted(sentinels),
+            )
+            for filename, content in sentinels.items():
+                self.assertEqual((output_dir / filename).read_bytes(), content)
+            create_plots.assert_not_called()
+            create_vth_plots.assert_not_called()
+            write_summary.assert_not_called()
 
 
 class ModelMetadataTests(unittest.TestCase):

@@ -86,6 +86,7 @@ CACHE_DIRECTORY_NAMES = {
     "__pycache__",
 }
 CACHE_FILE_SUFFIXES = {".pyc", ".pyo"}
+VIRTUAL_ENV_DIRECTORY_NAMES = {".venv", "venv"}
 
 
 class ReleaseIntegrityError(RuntimeError):
@@ -161,13 +162,14 @@ def _release_files(root: Path, manifest_path: Path) -> set[PurePosixPath]:
     manifest_path = manifest_path.resolve()
     paths: set[PurePosixPath] = set()
     for path in root.rglob("*"):
-        if ".git" in path.relative_to(root).parts:
+        relative = path.relative_to(root)
+        if relative.parts and relative.parts[0].lower() == ".git":
             continue
         if not (path.is_file() or path.is_symlink()):
             continue
         if path.resolve() == manifest_path:
             continue
-        paths.add(PurePosixPath(path.relative_to(root).as_posix()))
+        paths.add(PurePosixPath(relative.as_posix()))
     return paths
 
 
@@ -235,19 +237,23 @@ def find_forbidden_artifacts(root: Path) -> list[str]:
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         parts = relative.parts
-        if ".git" in parts:
+        lower_parts = tuple(part.lower() for part in parts)
+        if lower_parts and lower_parts[0] == ".git":
             continue
         # Empty cache/generated directories are not files and therefore are not
         # present in a ZIP or Git tree. Only distributable artifacts are flagged.
         if not (path.is_file() or path.is_symlink()):
             continue
 
-        lower_parts = tuple(part.lower() for part in parts)
         lower_name = path.name.lower()
         reason: str | None = None
-        if lower_parts and lower_parts[0] == "models" and lower_name != "readme.md":
+        if ".git" in lower_parts:
+            reason = "nested Git metadata"
+        elif any(part in VIRTUAL_ENV_DIRECTORY_NAMES for part in lower_parts):
+            reason = "virtual environment"
+        elif lower_parts and lower_parts[0] == "models" and lower_name != "readme.md":
             reason = "model-card candidate"
-        elif any(part in CACHE_DIRECTORY_NAMES for part in parts):
+        elif any(part in CACHE_DIRECTORY_NAMES for part in lower_parts):
             reason = "runtime cache"
         elif path.suffix.lower() in CACHE_FILE_SUFFIXES:
             reason = "compiled Python cache"

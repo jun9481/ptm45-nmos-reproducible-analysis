@@ -925,61 +925,286 @@ def select_curve(
 def validate_processed_conditions(
     config: dict[str, Any], combined: pd.DataFrame
 ) -> None:
-    """Ensure the processed data matches the configured device geometry."""
-    metadata = (
-        ("W_um", "width_um", "um", True),
-        ("L_um", "length_um", "um", True),
-        ("temperature_C", "temperature_c", "deg C", False),
-    )
-    missing = [column for column, _, _, _ in metadata if column not in combined]
+    """Ensure processed provenance and sweep conditions match the config."""
+    required_columns = {
+        "model_family",
+        "device_type",
+        "technology_nm",
+        "application_type",
+        "W_um",
+        "L_um",
+        "temperature_C",
+        "VDS_V",
+        "VGS_V",
+        "ID_A",
+        "bias_label",
+        "comparison_basis",
+        "nominal_VDD_V",
+        "source_type",
+        "simulator",
+        "model_file_sha256",
+    }
+    missing = sorted(required_columns - set(combined.columns))
     if missing:
         raise PipelineError(
             "Vth/DIBL analysis is missing processed-data metadata columns: "
             f"{', '.join(missing)}. Run 'process' again."
         )
+    if combined.empty:
+        raise PipelineError("Processed data contains no rows. Run 'process' again.")
 
     project = config.get("project")
     if not isinstance(project, dict):
         raise PipelineError("project_config.json is missing the 'project' object.")
 
-    for column, config_key, unit, must_be_positive in metadata:
-        if config_key not in project:
-            raise PipelineError(
-                f"project_config.json is missing project.{config_key}."
-            )
-        try:
-            expected = float(project[config_key])
-        except (TypeError, ValueError) as exc:
-            raise PipelineError(
-                f"project.{config_key} must be a finite numeric value."
-            ) from exc
-        if not math.isfinite(expected) or (must_be_positive and expected <= 0):
-            requirement = "a positive finite" if must_be_positive else "a finite"
-            raise PipelineError(
-                f"project.{config_key} must be {requirement} numeric value."
-            )
+    models = config.get("models")
+    if not isinstance(models, dict):
+        raise PipelineError("project_config.json is missing the 'models' object.")
 
-        numeric = pd.to_numeric(combined[column], errors="coerce").to_numpy(
-            dtype=float
-        )
+    def configured_float(
+        source: dict[str, Any],
+        key: str,
+        label: str,
+        *,
+        positive: bool = False,
+    ) -> float:
+        if key not in source:
+            raise PipelineError(f"project_config.json is missing {label}.")
+        try:
+            value = float(source[key])
+        except (TypeError, ValueError) as exc:
+            raise PipelineError(f"{label} must be a finite numeric value.") from exc
+        if not math.isfinite(value) or (positive and value <= 0):
+            requirement = "a positive finite" if positive else "a finite"
+            raise PipelineError(f"{label} must be {requirement} numeric value.")
+        return value
+
+    def validate_numeric_column(
+        frame: pd.DataFrame,
+        column: str,
+        expected: float,
+        expected_label: str,
+        *,
+        atol: float = 1e-12,
+    ) -> None:
+        numeric = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
         nonfinite = ~np.isfinite(numeric)
         if nonfinite.any():
             raise PipelineError(
                 f"Processed metadata column {column} contains "
                 f"{int(nonfinite.sum())} non-finite or non-numeric value(s)."
             )
-
-        mismatch = ~np.isclose(numeric, expected, rtol=0.0, atol=1e-12)
+        mismatch = ~np.isclose(numeric, expected, rtol=0.0, atol=atol)
         if mismatch.any():
-            found = ", ".join(
-                f"{value:g}" for value in np.unique(numeric[mismatch])[:5]
-            )
-            suffix = "" if np.unique(numeric[mismatch]).size <= 5 else ", ..."
+            found_values = np.unique(numeric[mismatch])
+            found = ", ".join(f"{value:g}" for value in found_values[:5])
+            suffix = "" if found_values.size <= 5 else ", ..."
             raise PipelineError(
                 f"Processed metadata {column} does not match "
-                f"project.{config_key}={expected:g} {unit}: found "
-                f"{found}{suffix} in {int(mismatch.sum())} row(s). "
-                "Run 'process' again with the current configuration."
+                f"{expected_label}={expected:g}: found {found}{suffix} in "
+                f"{int(mismatch.sum())} row(s). Run 'process' again with the "
+                "current configuration."
+            )
+
+    technology_nm = configured_float(
+        project, "technology_nm", "project.technology_nm", positive=True
+    )
+    if not technology_nm.is_integer():
+        raise PipelineError("project.technology_nm must be a positive integer.")
+    validate_numeric_column(
+        combined, "technology_nm", technology_nm, "project.technology_nm"
+    )
+
+    global_numeric = (
+        ("W_um", "width_um", True),
+        ("L_um", "length_um", True),
+        ("temperature_C", "temperature_c", False),
+    )
+    for column, config_key, positive in global_numeric:
+        expected = configured_float(
+            project,
+            config_key,
+            f"project.{config_key}",
+            positive=positive,
+        )
+        validate_numeric_column(
+            combined, column, expected, f"project.{config_key}"
+        )
+
+    device_type = project.get("device_type")
+    if not isinstance(device_type, str) or not device_type.strip():
+        raise PipelineError("project_config.json is missing project.device_type.")
+    expected_text = {
+        "model_family": "PTM",
+        "device_type": device_type,
+        "source_type": "simulation",
+        "simulator": "ngspice",
+    }
+    for column, expected in expected_text.items():
+        mismatch = combined[column].astype(str) != expected
+        if mismatch.any():
+            found = ", ".join(sorted(combined.loc[mismatch, column].astype(str).unique())[:5])
+            raise PipelineError(
+                f"Processed metadata {column} does not match the configured "
+                f"value {expected!r}: found {found}. Run 'process' again."
+            )
+
+    vgs_start_v = configured_float(
+        project, "vgs_start_v", "project.vgs_start_v"
+    )
+    vgs_step_v = configured_float(
+        project, "vgs_step_v", "project.vgs_step_v", positive=True
+    )
+    low_vds_v = configured_float(project, "low_vds_v", "project.low_vds_v")
+
+    expected_curves: dict[tuple[str, str], tuple[str, float, float]] = {}
+    for application_type in ("HP", "LP"):
+        model = models.get(application_type)
+        if not isinstance(model, dict):
+            raise PipelineError(
+                f"project_config.json is missing models.{application_type}."
+            )
+        nominal_vdd_v = configured_float(
+            model,
+            "expected_nominal_vdd_v",
+            f"models.{application_type}.expected_nominal_vdd_v",
+            positive=True,
+        )
+        expected_sha256 = str(model.get("expected_sha256", "")).lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise PipelineError(
+                f"models.{application_type}.expected_sha256 must be a "
+                "64-character hexadecimal digest."
+            )
+
+        application_rows = combined[
+            combined["application_type"].astype(str) == application_type
+        ]
+        if application_rows.empty:
+            raise PipelineError(
+                f"Processed data is missing application_type={application_type}."
+            )
+        validate_numeric_column(
+            application_rows,
+            "nominal_VDD_V",
+            nominal_vdd_v,
+            f"models.{application_type}.expected_nominal_vdd_v",
+        )
+        hashes = application_rows["model_file_sha256"].astype(str).str.lower()
+        if (hashes != expected_sha256).any():
+            found = ", ".join(sorted(hashes[hashes != expected_sha256].unique())[:5])
+            raise PipelineError(
+                f"Processed metadata model_file_sha256 for {application_type} "
+                f"does not match models.{application_type}.expected_sha256: "
+                f"found {found}. Run 'process' again."
+            )
+
+        expected_curves[(application_type, "low_vds")] = (
+            "low_drain_bias",
+            low_vds_v,
+            nominal_vdd_v,
+        )
+        expected_curves[(application_type, "nominal_vdd")] = (
+            "model_nominal_vdd",
+            nominal_vdd_v,
+            nominal_vdd_v,
+        )
+
+    if bool(project.get("include_common_vdd_curve", False)):
+        common_vdd_v = configured_float(
+            project,
+            "common_vdd_v",
+            "project.common_vdd_v",
+            positive=True,
+        )
+        for application_type in ("HP", "LP"):
+            nominal_vdd_v = float(
+                models[application_type]["expected_nominal_vdd_v"]
+            )
+            if not math.isclose(
+                common_vdd_v, nominal_vdd_v, rel_tol=0.0, abs_tol=1e-12
+            ):
+                expected_curves[
+                    (
+                        application_type,
+                        f"common_{format_voltage_for_name(common_vdd_v)}",
+                    )
+                ] = ("common_vdd", common_vdd_v, common_vdd_v)
+
+    actual_curves = set(
+        zip(
+            combined["application_type"].astype(str),
+            combined["bias_label"].astype(str),
+        )
+    )
+    expected_curve_keys = set(expected_curves)
+    if actual_curves != expected_curve_keys:
+        missing_curves = sorted(expected_curve_keys - actual_curves)
+        unexpected_curves = sorted(actual_curves - expected_curve_keys)
+        details: list[str] = []
+        if missing_curves:
+            details.append(f"missing {missing_curves}")
+        if unexpected_curves:
+            details.append(f"unexpected {unexpected_curves}")
+        raise PipelineError(
+            "Processed curve inventory does not match project_config.json: "
+            + "; ".join(details)
+            + ". Run 'process' again."
+        )
+
+    for (application_type, bias_label), (
+        comparison_basis,
+        vds_v,
+        vgs_stop_v,
+    ) in expected_curves.items():
+        frame = combined[
+            (combined["application_type"].astype(str) == application_type)
+            & (combined["bias_label"].astype(str) == bias_label)
+        ]
+        bases = frame["comparison_basis"].astype(str)
+        if (bases != comparison_basis).any():
+            raise PipelineError(
+                f"Processed metadata comparison_basis for "
+                f"{application_type}.{bias_label} must be {comparison_basis!r}."
+            )
+        validate_numeric_column(
+            frame,
+            "VDS_V",
+            vds_v,
+            f"configured VDS for {application_type}.{bias_label}",
+        )
+
+        vgs_values = pd.to_numeric(frame["VGS_V"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        if not np.isfinite(vgs_values).all():
+            raise PipelineError(
+                f"Processed VGS_V contains non-finite values for "
+                f"{application_type}.{bias_label}."
+            )
+        expected_count = expected_row_count(vgs_start_v, vgs_stop_v, vgs_step_v)
+        expected_grid = vgs_start_v + vgs_step_v * np.arange(expected_count)
+        ordered_vgs = np.sort(vgs_values)
+        grid_atol = max(1e-12, vgs_step_v * 1e-6)
+        if len(ordered_vgs) != expected_count or not np.allclose(
+            ordered_vgs,
+            expected_grid,
+            rtol=0.0,
+            atol=grid_atol,
+        ):
+            raise PipelineError(
+                f"Processed VGS_V grid for {application_type}.{bias_label} "
+                "does not match project.vgs_start_v, project.vgs_step_v, and "
+                "the configured sweep stop. Run 'process' again."
+            )
+
+        current = pd.to_numeric(frame["ID_A"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        if not np.isfinite(current).all():
+            raise PipelineError(
+                f"Processed ID_A contains non-finite values for "
+                f"{application_type}.{bias_label}."
             )
 
 
@@ -1342,17 +1567,20 @@ def analyze_data(config: dict[str, Any], combined: pd.DataFrame) -> pd.DataFrame
             rows.append(row)
 
     metrics = pd.DataFrame(rows, columns=METRICS_COLUMNS)
+    vth_dibl_metrics = analyze_vth_dibl(config, combined)
+    vth_dibl_sensitivity = analyze_vth_dibl_sensitivity(config, combined)
+
+    # Finish every calculation before creating or replacing result artifacts.
+    # A validation or sensitivity failure therefore cannot leave a partially
+    # updated set of CSV files behind.
     output_dir = ROOT / "results"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    vth_dibl_metrics = analyze_vth_dibl(config, combined)
     vth_dibl_metrics.to_csv(
         output_dir / "vth_dibl_metrics.csv",
         index=False,
         float_format=METRICS_FLOAT_FORMAT,
         lineterminator="\n",
     )
-    vth_dibl_sensitivity = analyze_vth_dibl_sensitivity(config, combined)
     vth_dibl_sensitivity.to_csv(
         output_dir / "vth_dibl_sensitivity.csv",
         index=False,
