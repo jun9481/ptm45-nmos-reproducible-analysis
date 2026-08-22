@@ -33,6 +33,7 @@ BASELINE_WINDOW = 21
 BASELINE_R_SQUARED = 0.995
 BASELINE_SPAN_DECADES = 0.75
 BASELINE_MAX_ION_FRACTION = 0.01
+TABLE_SIGNIFICANT_DIGITS = 12
 
 
 ALL_WINDOW_COLUMNS = [
@@ -94,6 +95,20 @@ CUTOFF_COLUMNS = [
     "touches_lower_sweep_edge",
     "deviation_from_baseline_pct",
 ]
+
+
+def published_percent_deviation(value: float, baseline: float) -> float:
+    """Compare values at the precision published in the validation tables.
+
+    Regression results can differ by a few binary floating-point ulps across
+    NumPy/BLAS builds.  Canonicalizing both operands before deriving the
+    percentage keeps the published CSVs reproducible without claiming more
+    precision than their twelve-significant-digit representation.
+    """
+
+    published_value = float(f"{value:.{TABLE_SIGNIFICANT_DIGITS}g}")
+    published_baseline = float(f"{baseline:.{TABLE_SIGNIFICANT_DIGITS}g}")
+    return abs(published_value - published_baseline) / published_baseline * 100.0
 
 
 def common_curve(combined: pd.DataFrame, application_type: str) -> pd.DataFrame:
@@ -236,9 +251,9 @@ def sensitivity_row(
     row.update(
         {
             "SS_mV_dec": ss,
-            "deviation_from_baseline_pct": abs(ss - baseline["SS_mV_dec"])
-            / baseline["SS_mV_dec"]
-            * 100.0,
+            "deviation_from_baseline_pct": published_percent_deviation(
+                ss, baseline["SS_mV_dec"]
+            ),
             "slope_decades_per_V": float(best["slope_decades_per_V"]),
             "intercept_log10_A": float(best["intercept_log10_A"]),
             "R_squared": float(best["R_squared"]),
@@ -347,11 +362,9 @@ def generate_tables(
                     "touches_lower_sweep_edge": bool(
                         best["touches_lower_sweep_edge"]
                     ),
-                    "deviation_from_baseline_pct": abs(
-                        ss - baseline["SS_mV_dec"]
-                    )
-                    / baseline["SS_mV_dec"]
-                    * 100.0,
+                    "deviation_from_baseline_pct": published_percent_deviation(
+                        ss, baseline["SS_mV_dec"]
+                    ),
                 }
             )
 
@@ -394,7 +407,11 @@ def write_tables(
     output_dir.mkdir(parents=True, exist_ok=True)
     # Twelve significant digits preserve the published analysis precision while
     # avoiding platform-specific last-bit differences from NumPy/BLAS builds.
-    options = {"index": False, "float_format": "%.12g", "lineterminator": "\n"}
+    options = {
+        "index": False,
+        "float_format": f"%.{TABLE_SIGNIFICANT_DIGITS}g",
+        "lineterminator": "\n",
+    }
     all_windows.to_csv(output_dir / "all_window_statistics.csv", **options)
     sensitivity.to_csv(output_dir / "sensitivity_results.csv", **options)
     cutoff.to_csv(output_dir / "cutoff_sensitivity.csv", **options)
